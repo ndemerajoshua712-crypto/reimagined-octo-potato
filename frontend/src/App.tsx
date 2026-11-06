@@ -23,10 +23,11 @@ import {
   UploadCloud,
   X,
 } from "lucide-react";
-import { API_BASE, apiUrl, fetchCases, fetchJob, fetchResult, submitVideo } from "./api";
+import { API_BASE, apiUrl, fetchCases, fetchJob, fetchPublicConfig, fetchResult, submitVideo } from "./api";
 import type { AnalysisResult, CaseSummary, JobUpdate } from "./types";
 
 const INTERVALS = [0.25, 0.5, 1, 2];
+const DEFAULT_MAX_UPLOAD_BYTES = 2 * 1024 * 1024 * 1024;
 
 function formatDate(value?: string) {
   if (!value) return "—";
@@ -37,12 +38,14 @@ function formatDate(value?: string) {
 }
 
 function formatBytes(bytes: number) {
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function percent(value?: unknown) {
-  const score = typeof value === "number" ? value : 0;
+  if (typeof value !== "number") return "N/A";
+  const score = value;
   return `${Math.round(score * 100)}%`;
 }
 
@@ -59,6 +62,7 @@ function stageDetails(stage: string) {
     queued: "Your video is uploaded and waiting for an analysis worker.",
     provenance: "Checking file metadata and creating its SHA-256 fingerprint.",
     scene_detection: "Finding scene changes and preparing sampled video frames.",
+    frame_extraction: "Saving the selected video frames for visual analysis.",
     face_analysis: "Checking faces in sampled frames. This step can take several minutes for longer videos.",
     temporal_analysis: "Comparing visual signals across the sampled frames.",
     audio_analysis: "Extracting and analyzing the audio track.",
@@ -79,6 +83,7 @@ function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [apiOnline, setApiOnline] = useState<boolean | null>(null);
+  const [uploadLimitBytes, setUploadLimitBytes] = useState(DEFAULT_MAX_UPLOAD_BYTES);
   const [error, setError] = useState("");
   const [search, setSearch] = useState("");
 
@@ -96,6 +101,11 @@ function App() {
 
   useEffect(() => {
     let alive = true;
+    fetchPublicConfig().then((config) => {
+      if (alive && Number.isFinite(config.max_upload_bytes) && config.max_upload_bytes > 0) {
+        setUploadLimitBytes(config.max_upload_bytes);
+      }
+    }).catch(() => undefined);
     fetch(`${API_BASE}/ready`).then((response) => {
       if (!alive) return;
       setApiOnline(response.ok);
@@ -191,6 +201,12 @@ function App() {
       setSelectedFile(null);
       if (inputRef.current) inputRef.current.value = "";
       setError("Choose an MP4, MOV, AVI, MKV, or WebM video.");
+      return;
+    }
+    if (file.size > uploadLimitBytes) {
+      setSelectedFile(null);
+      if (inputRef.current) inputRef.current.value = "";
+      setError(`This file is ${formatBytes(file.size)}. The server limit is ${formatBytes(uploadLimitBytes)}.`);
       return;
     }
     setError("");
@@ -289,10 +305,10 @@ function App() {
             </div>
             <div className="upload-controls">
               <div className="interval-control"><span id="sampling-label">FRAME SAMPLING</span><div className="segmented-control" role="group" aria-labelledby="sampling-label">{INTERVALS.map((value) => <button type="button" key={value} className={frameInterval === value ? "active" : ""} aria-pressed={frameInterval === value} title={value >= 1 ? "Faster analysis with fewer sampled frames" : "More detailed sampling; analysis may take longer"} onClick={() => setFrameInterval(value)}>{value}s</button>)}</div></div>
-              <div className="format-note"><ShieldQuestion size={15} /> Supported: MP4, MOV, AVI, MKV, WEBM</div>
+              <div className="format-note"><ShieldQuestion size={15} /> MP4, MOV, AVI, MKV, WEBM · Up to {formatBytes(uploadLimitBytes)}</div>
               <button className="analyze-button" disabled={!selectedFile || isUploading || apiOnline === false} title={apiOnline === false ? "Start the API and worker to analyze a video" : undefined} onClick={startAnalysis}>{isUploading ? <LoaderCircle className="spin" size={16} /> : <Play size={15} fill="currentColor" />}<span>{isUploading ? "Uploading video…" : "Analyze video"}</span><ArrowUpRight size={15} /></button>
             </div>
-            <div className="sampling-help" aria-live="polite">{frameInterval >= 1 ? "Faster scan: fewer frames are checked." : "Detailed scan: more frames are checked and analysis may take longer."} Sampling one frame every {frameInterval} seconds.</div>
+            <div className="sampling-help" aria-live="polite">{frameInterval >= 1 ? "Faster scan: fewer frames are checked." : "Detailed scan: more frames are checked and analysis may take longer."} Requested interval: {frameInterval} seconds. Long clips are automatically capped to keep model work bounded; the actual interval appears in the results.</div>
             {error && <div className="error-banner" role="alert"><AlertCircle size={16} /><span>{error}</span><button aria-label="Dismiss error" onClick={() => setError("")}><X size={14} /></button></div>}
           </section>
 
@@ -325,8 +341,8 @@ function App() {
 }
 
 function ResultView({ result, selectedCase }: { result: AnalysisResult; selectedCase: CaseSummary | null }) {
-  const score = result.multimodal_result.primary_score || 0;
-  const evidenceClass = /high|fake|manipulat/i.test(result.multimodal_result.verdict) ? "high" : "low";
+  const score = typeof result.multimodal_result.primary_score === "number" ? result.multimodal_result.primary_score : null;
+  const evidenceClass = score === null ? "" : /high|fake|manipulat/i.test(result.multimodal_result.verdict) ? "high" : "low";
   const frames = result.frames.slice(0, 8);
   const duration = Number(result.provenance.duration_seconds || result.sync_result.video_duration || 0);
   const provenance = result.provenance;
@@ -336,7 +352,7 @@ function ResultView({ result, selectedCase }: { result: AnalysisResult; selected
     ["VIDEO CODEC", String(provenance.video_codec || "—")],
     ["DIMENSIONS", provenance.width && provenance.height ? `${provenance.width} × ${provenance.height}` : "—"],
     ["AUDIO CODEC", String(provenance.audio_codec || "—")],
-    ["FRAME SAMPLE", `${result.frame_interval}s`],
+    ["FRAME SAMPLE", result.requested_frame_interval && result.requested_frame_interval !== result.frame_interval ? `${result.frame_interval.toFixed(2)}s (requested ${result.requested_frame_interval}s)` : `${result.frame_interval}s`],
   ];
 
   return (
@@ -345,13 +361,15 @@ function ResultView({ result, selectedCase }: { result: AnalysisResult; selected
       <div className="result-heading"><div><div className="result-filename"><FileVideo2 size={18} /> {result.filename}</div><h2>Evidence overview</h2></div><a className="report-button" href={apiUrl(`/api/v1/cases/${result.case_id}/report`)} download><ArrowDownToLine size={15} /> Export report</a></div>
 
       <div className="summary-grid">
-        <div className="verdict-card"><div className="card-label"><ShieldCheck size={15} /> MULTIMODAL ASSESSMENT</div><div className={`verdict-text ${evidenceClass}`}>{result.multimodal_result.verdict || "Assessment unavailable"}</div><div className="verdict-foot"><span className={`verdict-dot ${evidenceClass}`} /> Combined evidence signals</div></div>
-        <div className="score-card"><div className="card-label"><Gauge size={15} /> PROTOTYPE EVIDENCE SCORE</div><div className="score-row"><div className={`score-number ${evidenceClass}`}>{Math.round(score * 100)}<span>%</span></div><div className="score-meter"><div className="meter-ring" style={{ "--score": `${Math.max(0, Math.min(100, score * 100))}%` } as CSSProperties}><div className="meter-inner"><Sparkles size={14} /></div></div></div></div><div className="score-foot">Raw model blend · not a probability</div>
+        <div className="verdict-card"><div className="card-label"><ShieldCheck size={15} /> {result.multimodal_result.available_modalities?.length === 1 ? `${result.multimodal_result.available_modalities[0].toUpperCase()}-ONLY ASSESSMENT` : result.multimodal_result.available_modalities?.length === 2 ? "MULTIMODAL ASSESSMENT" : "EVIDENCE COVERAGE"}</div><div className={`verdict-text ${evidenceClass}`}>{result.multimodal_result.verdict || "Assessment unavailable"}</div><div className="verdict-foot"><span className={`verdict-dot ${evidenceClass}`} /> {score === null ? "No usable model signals" : result.multimodal_result.available_modalities?.length === 1 ? "One model signal available" : "Combined evidence signals"}</div></div>
+        <div className="score-card"><div className="card-label"><Gauge size={15} /> RAW EVIDENCE SCORE</div><div className="score-row"><div className={`score-number ${evidenceClass}`}>{score === null ? "N/A" : <>{Math.round(score * 100)}<span>%</span></>}</div>{score !== null && <div className="score-meter"><div className="meter-ring" style={{ "--score": `${Math.max(0, Math.min(100, score * 100))}%` } as CSSProperties}><div className="meter-inner"><Sparkles size={14} /></div></div></div>}</div><div className="score-foot">{score === null ? "No usable video or audio signal" : `${result.multimodal_result.available_modalities?.join(" + ") || "model"} signal${(result.multimodal_result.available_modalities?.length || 0) === 1 ? "" : "s"} · uncalibrated, not a probability`}</div>
           {typeof result.calibrated_primary_score === "number" && <div className="calibrated-score-note"><div><span>CALIBRATED ESTIMATE</span><strong>{percent(result.calibrated_primary_score)}</strong></div><small>Held-out ({result.calibration?.test_rows ?? "unknown"} labeled cases): Brier {result.calibration?.calibrated_brier?.toFixed(3) ?? "—"} · ECE {result.calibration?.calibrated_ece?.toFixed(3) ?? "—"} · AUC {result.calibration?.calibrated_auc?.toFixed(3) ?? "—"}. Applies only to data similar to that calibration set.</small></div>}
           {result.calibration?.subgroup_metrics && Object.entries(result.calibration.subgroup_metrics).some(([, groups]) => Object.keys(groups).length > 0) && <div className="calibration-breakdown"><span>HELD-OUT DATA BREAKDOWN</span>{Object.entries(result.calibration.subgroup_metrics).flatMap(([dimension, groups]) => Object.entries(groups).map(([group, metrics]) => <small key={`${dimension}-${group}`}>{dimension.replaceAll("_", " ")}: {group} · {metrics.rows} cases · Brier {metrics.calibrated_brier.toFixed(3)}{typeof metrics.calibrated_auc === "number" ? ` · AUC ${metrics.calibrated_auc.toFixed(3)}` : ""}</small>))}</div>}
         </div>
         <div className="signal-card"><div className="card-label"><Activity size={15} /> SIGNAL BREAKDOWN</div><SignalBar label="VIDEO" value={result.multimodal_result.video_evidence} /><SignalBar label="AUDIO" value={result.multimodal_result.audio_evidence} /><SignalBar label="TEMPORAL" value={result.multimodal_result.temporal_consistency} /></div>
       </div>
+
+      {!!result.analysis_warnings?.length && <div className="analysis-notes" role="status"><strong>Coverage notes</strong>{result.analysis_warnings.map((warning, index) => <span key={`${index}-${warning}`}>{warning}</span>)}</div>}
 
       <div className="detail-grid">
         <section className="data-card provenance-card"><div className="data-card-heading"><div><div className="card-label"><Fingerprint size={15} /> FILE PROVENANCE</div><h3>Source characteristics</h3></div><span className="verified-tag"><Check size={12} /> HASHED</span></div>
@@ -373,11 +391,11 @@ function ResultView({ result, selectedCase }: { result: AnalysisResult; selected
       </section>
 
       <div className="detail-grid lower-grid">
-        <section className="data-card audio-card"><div className="data-card-heading"><div><div className="card-label"><AudioLines size={15} /> AUDIO WINDOWS</div><h3>Spoof signal over time</h3></div><span className="audio-summary">{result.audio_windows.total_windows} windows</span></div>
-          <div className="audio-legend"><span><i className="legend-real" /> Lower signal</span><span><i className="legend-spoof" /> Higher signal</span></div>
-          <div className="audio-bars">{result.audio_windows.windows.map((window, index) => <div key={index} className={`audio-bar ${window.spoof_probability >= 0.5 ? "elevated" : ""}`} title={`${window.start_time.toFixed(1)}–${window.end_time.toFixed(1)}s · ${percent(window.spoof_probability)} spoof signal`}><span style={{ height: `${Math.max(5, window.spoof_probability * 100)}%` }} /></div>)}</div>
-          <div className="audio-axis"><span>0:00</span><span>{duration ? `${Math.floor(duration / 2)}s` : "TIME"}</span><span>{duration ? `${duration.toFixed(0)}s` : "END"}</span></div>
-          <div className="audio-stats"><div><span>AVERAGE</span><strong>{percent(result.audio_windows.average_spoof_probability)}</strong></div><div><span>PEAK</span><strong>{percent(result.audio_windows.maximum_spoof_probability)}</strong></div><div><span>FLAGGED WINDOWS</span><strong>{percent(result.audio_windows.spoof_window_percentage)}</strong></div></div>
+        <section className="data-card audio-card"><div className="data-card-heading"><div><div className="card-label"><AudioLines size={15} /> AUDIO WINDOWS</div><h3>Spoof signal over time</h3></div><span className="audio-summary">{result.audio_windows.available === false ? "Unavailable" : `${result.audio_windows.total_windows} windows`}</span></div>
+          {result.audio_windows.available === false ? <div className="no-artifacts"><AudioLines size={18} /> {result.audio_windows.unavailable_reason || "Audio evidence could not be analyzed for this video."}</div> : <><div className="audio-legend"><span><i className="legend-real" /> Lower signal</span><span><i className="legend-spoof" /> Higher signal</span></div>
+            <div className="audio-bars">{result.audio_windows.windows.map((window, index) => <div key={index} className={`audio-bar ${window.spoof_probability >= 0.5 ? "elevated" : ""}`} title={`${window.start_time.toFixed(1)}–${window.end_time.toFixed(1)}s · ${percent(window.spoof_probability)} spoof signal`}><span style={{ height: `${Math.max(5, window.spoof_probability * 100)}%` }} /></div>)}</div>
+            <div className="audio-axis"><span>0:00</span><span>{duration ? `${Math.floor(duration / 2)}s` : "TIME"}</span><span>{duration ? `${duration.toFixed(0)}s` : "END"}</span></div>
+            <div className="audio-stats"><div><span>AVERAGE</span><strong>{percent(result.audio_windows.average_spoof_probability)}</strong></div><div><span>PEAK</span><strong>{percent(result.audio_windows.maximum_spoof_probability)}</strong></div><div><span>FLAGGED WINDOWS</span><strong>{percent(result.audio_windows.spoof_window_percentage)}</strong></div></div></>}
         </section>
         <section className="data-card timeline-card"><div className="data-card-heading"><div><div className="card-label"><Activity size={15} /> SCENE STRUCTURE</div><h3>Detected segments</h3></div><span className="audio-summary">{result.scenes.length} scenes</span></div>
           {result.scenes.length ? <div className="scene-list">{result.scenes.slice(0, 6).map((scene, index) => {
@@ -389,15 +407,16 @@ function ResultView({ result, selectedCase }: { result: AnalysisResult; selected
         </section>
       </div>
 
-      <div className="interpretation-note"><ShieldQuestion size={16} /><p><b>Interpret findings as evidence signals.</b> The combined score is a prototype measure, not a calibrated probability or a definitive determination of authenticity.</p></div>
+      <div className="interpretation-note"><ShieldQuestion size={16} /><p><b>Interpret findings as evidence signals.</b> The combined score is uncalibrated, not a probability or a definitive determination of authenticity.</p></div>
       <div className="result-footnote"><span>CASE {result.case_id.toUpperCase()}</span><span>{selectedCase ? formatBytes(selectedCase.size_bytes) : ""} · Analysis sampled {result.frames.length} frames</span></div>
     </section>
   );
 }
 
 function SignalBar({ label, value }: { label: string; value: unknown }) {
-  const score = typeof value === "number" ? Math.max(0, Math.min(1, value)) : 0;
-  return <div className="signal-row"><span>{label}</span><div className="signal-track"><i style={{ width: `${score * 100}%` }} /></div><b>{percent(score)}</b></div>;
+  const available = typeof value === "number";
+  const score = available ? Math.max(0, Math.min(1, value)) : 0;
+  return <div className={`signal-row ${available ? "" : "unavailable"}`}><span>{label}</span><div className="signal-track"><i style={{ width: `${score * 100}%` }} /></div><b>{available ? percent(score) : "N/A"}</b></div>;
 }
 
 export default App;

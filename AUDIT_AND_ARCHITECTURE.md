@@ -34,7 +34,7 @@
 
 - Keep the analysis functions as a domain/service layer; do not put FastAPI or React concerns into the model modules.
 - Keep the evidence output explicit: provenance, sampled frames, per-frame/face findings, audio windows, temporal and A/V findings, score, and report.
-- Preserve clear score semantics. The current report already labels the combined score as a prototype score rather than a calibrated probability.
+- Preserve clear score semantics. The current report labels the combined score as a raw, uncalibrated score rather than a probability.
 - Keep large generated media and model weights out of the web application bundle and ordinary source control workflow.
 
 ## Target architecture

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 
 def generate_forensic_report(
@@ -10,6 +10,8 @@ def generate_forensic_report(
     sync_result,
     calibrated_score=None,
     calibration_info=None,
+    analysis_warnings=None,
+    model_checkpoints=None,
 ):
 
     report = []
@@ -21,7 +23,7 @@ def generate_forensic_report(
     report.append(f"File: {filename}")
     report.append(
         f"Analysis Time: "
-        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
     )
 
     report.append("\n" + "-" * 70)
@@ -32,9 +34,11 @@ def generate_forensic_report(
         f"Verdict: {multimodal_result['verdict']}"
     )
 
+    primary_score = multimodal_result.get("primary_score")
     report.append(
-        f"Evidence Score: "
-        f"{multimodal_result['primary_score']*100:.2f}%"
+        f"Evidence Score: {primary_score*100:.2f}%"
+        if primary_score is not None else
+        "Evidence Score: Unavailable (no usable model signal was produced)."
     )
 
     if calibrated_score is not None:
@@ -68,8 +72,8 @@ def generate_forensic_report(
             )
 
     report.append(
-        "\nNOTE: The evidence score is a prototype "
-        "multimodal score and should not be interpreted "
+        "\nNOTE: The evidence score is an uncalibrated "
+        "model blend and should not be interpreted "
         "as a calibrated probability."
     )
     report.append(
@@ -82,13 +86,37 @@ def generate_forensic_report(
 
                   f"{multimodal_result['av_sync_status']}")
 
+    if analysis_warnings:
+        report.append("\n" + "-" * 70)
+        report.append("ANALYSIS NOTES")
+        report.append("-" * 70)
+        report.extend(f"- {warning}" for warning in analysis_warnings)
+
+    if model_checkpoints:
+        report.append("\n" + "-" * 70)
+        report.append("MODEL CHECKPOINTS")
+        report.append("-" * 70)
+        for modality, checkpoint in model_checkpoints.items():
+            if checkpoint.get("available"):
+                report.append(
+                    f"{modality.title()} ({checkpoint.get('name', 'model')}): "
+                    f"SHA-256 {checkpoint['sha256']}"
+                )
+            else:
+                report.append(
+                    f"{modality.title()} ({checkpoint.get('name', 'model')}): "
+                    "checkpoint unavailable."
+                )
+
     report.append("\n" + "-" * 70)
     report.append("VIDEO ANALYSIS")
     report.append("-" * 70)
 
+    video_score = video_result.get("mean_fake_probability")
     report.append(
-        f"Mean Fake Score: "
-        f"{video_result['mean_fake_probability'] * 100:.2f}%"
+        f"Mean Fake Score: {video_score * 100:.2f}%"
+        if video_score is not None else
+        "Mean Fake Score: Unavailable (no usable face predictions)."
     )
 
     report.append(
@@ -105,33 +133,40 @@ def generate_forensic_report(
     report.append("AUDIO ANALYSIS")
     report.append("-" * 70)
 
-    report.append(
-        f"Average Spoof Score: "
-        f"{audio_result['average_spoof_probability'] * 100:.2f}%"
-    )
-
-    report.append(
-        f"Maximum Spoof Score: "
-        f"{audio_result['maximum_spoof_probability'] * 100:.2f}%"
-    )
-
-    report.append(
-        f"Suspicious Windows: "
-        f"{audio_result['spoof_window_percentage']:.2f}%"
-    )
+    if audio_result.get("available", True):
+        report.append(
+            f"Average Spoof Score: "
+            f"{audio_result['average_spoof_probability'] * 100:.2f}%"
+        )
+        report.append(
+            f"Maximum Spoof Score: "
+            f"{audio_result['maximum_spoof_probability'] * 100:.2f}%"
+        )
+        report.append(
+            f"Suspicious Windows: "
+            f"{audio_result['spoof_window_percentage']:.2f}%"
+        )
+    else:
+        report.append(
+            "Audio analysis unavailable: "
+            f"{audio_result.get('unavailable_reason') or 'no usable audio signal was produced.'}"
+        )
 
     report.append("\n" + "-" * 70)
     report.append("TEMPORAL ANALYSIS")
     report.append("-" * 70)
 
+    temporal_consistency = temporal_result.get("temporal_consistency")
     report.append(
-        f"Temporal Consistency: "
-        f"{temporal_result['temporal_consistency'] * 100:.2f}%"
+        f"Temporal Consistency: {temporal_consistency * 100:.2f}%"
+        if temporal_consistency is not None else
+        "Temporal Consistency: Unavailable (no usable face predictions)."
     )
 
     report.append(
-        f"Average Deviation: "
-        f"{temporal_result['average_deviation'] * 100:.2f}%"
+        f"Average Deviation: {temporal_result['average_deviation'] * 100:.2f}%"
+        if temporal_consistency is not None else
+        "Average Deviation: Unavailable (no usable face predictions)."
     )
 
     report.append("\n" + "-" * 70)

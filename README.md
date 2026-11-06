@@ -2,13 +2,14 @@
 
 DeepTrace is a local video and audio evidence analysis app. The React interface uploads video to a FastAPI service; a separate Python worker analyzes it and stores case metadata and results in PostgreSQL.
 
-> DeepTrace is a prototype. Scores are evidence signals, not calibrated probabilities or definitive proof that media is authentic or manipulated. The local app does not include user authentication and should not be exposed publicly as-is.
+> DeepTrace produces investigative evidence signals, not definitive authenticity judgments. Current scores are not calibrated probabilities. The local app does not include user authentication and should remain restricted to trusted local use.
 
 ## What it includes
 
 - Video upload for MP4, MOV, AVI, MKV, and WebM.
 - Case history and job status updates.
 - Sampled-frame, face, scene, audio, temporal, and audio/video synchronization analysis.
+- Graceful handling when a video has no audio track; only available model signals contribute to the combined score, and unavailable evidence is labeled as such.
 - Structured results, downloadable text reports, and artifact links.
 - React, TypeScript, and Vite frontend; FastAPI API; PostgreSQL metadata database; Python analysis worker.
 
@@ -126,6 +127,7 @@ Analysis can take several minutes for longer videos, especially during face anal
 | Method and path | Purpose |
 | --- | --- |
 | `POST /api/v1/cases` | Upload a video and queue analysis. Multipart fields: `file`, optional `frame_interval` (`0.25`, `0.5`, `1.0`, or `2.0`). Returns `202` with case and job IDs. |
+| `GET /api/v1/config` | Read the public upload limit and accepted file extensions for frontend validation. |
 | `GET /api/v1/cases` | List cases. Supports `limit` and `offset`. |
 | `GET /api/v1/cases/{case_id}` | Get case metadata and job status. |
 | `GET /api/v1/jobs/{job_id}` | Get job status, stage, progress, and safe error details. |
@@ -142,18 +144,20 @@ Analysis can take several minutes for longer videos, especially during face anal
 - By default, uploaded videos and generated artifacts are stored under `backend_data/uploads` and `backend_data/artifacts`.
 - The local PostgreSQL container stores its database in the Docker volume `deeptrace_postgres_data`.
 - Root `.env` controls PostgreSQL, `DATABASE_URL`, the data directory, upload-size limit, and allowed frontend origins. `frontend/.env` controls `VITE_API_BASE_URL`.
+- `DEEPTRACE_MAX_ANALYSIS_FRAMES` and `DEEPTRACE_MAX_AUDIO_WINDOWS` bound model inference work per case (defaults: 600 frames and 300 audio windows). Long recordings use wider sample intervals and the result shows the effective sampling.
 - The default upload limit is 2 GiB. Change `DEEPTRACE_MAX_UPLOAD_BYTES` in the root `.env` to override it.
 - Keep model checkpoints, `.env` files, uploaded media, and generated evidence private. They are not intended for source control.
 
 ## Optional score calibration
 
-The pipeline can apply a locally fitted isotonic mapping to new cases and show held-out calibration metrics broken down by dataset and manipulation type. No labeled calibration dataset is included, so the calibrated estimate stays disabled until you prepare a representative CSV and fit the mapping:
+The pipeline can apply a locally fitted isotonic mapping to new cases and show held-out calibration metrics broken down by dataset and manipulation type. No labeled calibration dataset is included, so the calibrated estimate stays disabled until you prepare a representative labeled video manifest, run the evaluation pipeline, and fit the mapping. Each manifest row needs `video_path,label,split`; `dataset` and `manipulation_type` are optional. Labels are `0` for real and `1` for manipulated. Relative video paths are resolved from the manifest file's directory.
 
 ```powershell
-python -m backend.calibrate path\to\labeled_scores.csv
+python -m backend.evaluate_dataset path\to\labeled_manifest.csv --output cases\labeled_predictions.csv
+python -m backend.calibrate cases\labeled_predictions.csv
 ```
 
-The CSV needs `score,label,split` columns and may include `dataset,manipulation_type`. Use raw combined scores from this pipeline, labels `0` for real and `1` for manipulated, and `train` plus held-out `test`/`holdout`/`validation` rows. The command writes `cases/score_calibration.json`; only future analyses use it. See the calibration section in [the system guide](DEEPTRACE_SYSTEM_GUIDE.md) for requirements and interpretation.
+Keep near-duplicate source videos and their manipulations in the same split. The evaluator rejects duplicate media across splits and leaves combined scores blank when either modality is unavailable; inspect `analysis_error` and `modalities` before calibration. Use `train` plus held-out `test`/`holdout`/`validation` rows. The calibrator writes `cases/score_calibration.json`; only future analyses use it. See [the system guide](DEEPTRACE_SYSTEM_GUIDE.md) for requirements and interpretation.
 
 If you have an older SQLite case database, migrate it after PostgreSQL is running:
 

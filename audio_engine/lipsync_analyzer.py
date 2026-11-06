@@ -477,7 +477,7 @@ def compute_sync(mouth_raw, audio_raw, fps, max_lag_ms=500):
                     if n / fps < 10.0
                     else ""
                 )
-                + " (Prototype heuristic, not proof.)"
+                + " (Exploratory heuristic, not proof.)"
             ),
             "lip_sync_score": round(_score(best["peak"], best["lag_ms"]), 3),
             "audio_delay_ms": round(best["lag_ms"], 1),

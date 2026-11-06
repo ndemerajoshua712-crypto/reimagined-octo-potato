@@ -36,6 +36,7 @@ def run_one_job():
             frame_interval=job["options"].get("frame_interval", 0.5),
             output_root=case_artifacts,
             progress_callback=progress,
+            source_sha256=job["sha256"],
         )
         result["case_id"] = job["case_id"]
         repository.finish_job(job["job_id"], result)

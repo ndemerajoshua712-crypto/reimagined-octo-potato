@@ -105,7 +105,7 @@ def claim_job():
             (now_utc(), row["job_id"]),
         )
         case = db.execute(
-            "SELECT filename, source_path FROM cases WHERE case_id=%s",
+            "SELECT filename, source_path, sha256 FROM cases WHERE case_id=%s",
             (row["case_id"],),
         ).fetchone()
         return {
@@ -187,7 +187,7 @@ def get_case(case_id):
 
 
 def migrate_from_sqlite(sqlite_path: Path):
-    """Copy existing local prototype rows into PostgreSQL, preserving identifiers/results."""
+    """Copy existing local SQLite rows into PostgreSQL, preserving identifiers/results."""
     import sqlite3
 
     sqlite_path = Path(sqlite_path)

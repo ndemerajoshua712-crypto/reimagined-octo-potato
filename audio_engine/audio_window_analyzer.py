@@ -11,8 +11,17 @@ def analyze_audio_windows(
     audio_path,
     model,
     window_seconds=WINDOW_SECONDS,
-    step_seconds=STEP_SECONDS
+    step_seconds=STEP_SECONDS,
+    max_windows=300,
 ):
+
+    window_seconds = float(window_seconds)
+    step_seconds = float(step_seconds)
+    max_windows = int(max_windows)
+    if window_seconds <= 0 or step_seconds <= 0:
+        raise ValueError("Audio window and step durations must be positive.")
+    if max_windows < 1:
+        raise ValueError("max_windows must be at least 1.")
 
     audio, sample_rate = librosa.load(
         audio_path,
@@ -27,9 +36,19 @@ def analyze_audio_windows(
         window_seconds * sample_rate
     )
 
-    step_samples = int(
-        step_seconds * sample_rate
-    )
+    step_samples = max(1, int(step_seconds * sample_rate))
+
+    # Bound model inference on long recordings while preserving samples near
+    # both the beginning and end of the audio track.
+    max_start = max(0, len(audio) - window_samples)
+    estimated_windows = int(np.ceil(max_start / step_samples)) + 1
+    sampling_limited = estimated_windows > max_windows
+    if max_start == 0:
+        starts = [0]
+    elif sampling_limited:
+        starts = np.linspace(0, max_start, num=max_windows, dtype=np.int64).tolist()
+    else:
+        starts = list(range(0, len(audio), step_samples))
 
     if len(audio) < sample_rate:
         raise ValueError(
@@ -38,11 +57,8 @@ def analyze_audio_windows(
 
     results = []
 
-    start = 0
     window_number = 1
-
-    while start < len(audio):
-
+    for start in starts:
         end = start + window_samples
 
         segment = audio[
@@ -51,7 +67,7 @@ def analyze_audio_windows(
 
         # Ignore a tiny leftover section
         if len(segment) < sample_rate:
-            break
+            continue
 
         # AASIST-L handles the exact input length
         result = model.predict(segment)
@@ -83,7 +99,6 @@ def analyze_audio_windows(
                 result["confidence"]
         })
 
-        start += step_samples
         window_number += 1
 
     if not results:
@@ -130,7 +145,13 @@ def analyze_audio_windows(
             window_seconds,
 
         "step_seconds":
+            (starts[1] - starts[0]) / sample_rate if len(starts) > 1 else step_seconds,
+
+        "requested_step_seconds":
             step_seconds,
+
+        "sampling_limited":
+            sampling_limited,
 
         "average_spoof_probability":
             average_spoof,

@@ -50,8 +50,10 @@ export interface AnalysisResult {
     face_count: number;
     faces: Array<Record<string, unknown>>;
   }>;
-  temporal_result: Record<string, number | unknown[]>;
+  temporal_result: Record<string, number | null | unknown[]>;
   audio_windows: {
+    available?: boolean;
+    unavailable_reason?: string | null;
     audio_duration: number;
     total_windows: number;
     average_spoof_probability: number;
@@ -63,13 +65,14 @@ export interface AnalysisResult {
   sync_result: Record<string, number | string>;
   lip_sync: Record<string, unknown>;
   multimodal_result: {
-    primary_score: number;
+    primary_score: number | null;
     verdict: string;
+    available_modalities?: string[];
     temporal_status: string;
     av_sync_status: string;
-    video_evidence: number;
-    audio_evidence: number;
-    temporal_consistency: number;
+    video_evidence: number | null;
+    audio_evidence: number | null;
+    temporal_consistency: number | null;
   };
   calibrated_primary_score?: number | null;
   calibration?: {
@@ -93,4 +96,12 @@ export interface AnalysisResult {
   animation_result: { detected: boolean; confidence: number; reason: string };
   report: string;
   frame_interval: number;
+  requested_frame_interval?: number;
+  analysis_warnings?: string[];
+  model_checkpoints?: Record<string, {
+    name: string;
+    available: boolean;
+    size_bytes?: number;
+    sha256?: string | null;
+  }>;
 }

@@ -38,6 +38,7 @@ The command reads `backend_data/deeptrace.sqlite3` and preserves case/job IDs, r
 
 ## API workflow
 
+- `GET /api/v1/config` — public frontend settings for upload size and supported extensions.
 - `POST /api/v1/cases` — multipart `file` upload; optional `frame_interval` values: `0.25`, `0.5`, `1.0`, or `2.0` seconds.
 - `GET /api/v1/cases?limit=50&offset=0` — paginated case summaries.
 - `GET /api/v1/cases/{case_id}` — case and job status.
@@ -50,6 +51,10 @@ The command reads `backend_data/deeptrace.sqlite3` and preserves case/job IDs, r
 - `GET /ready` — readiness check including PostgreSQL connectivity.
 
 The analysis worker uses PostgreSQL row locks to claim jobs, so multiple workers can safely share the queue. Jobs left running for more than six hours are requeued on worker startup. Local CORS origins cover React development on ports 5173 and 3000; set `DEEPTRACE_CORS_ORIGINS` for another frontend origin.
+
+Long-video model inference is bounded by `DEEPTRACE_MAX_ANALYSIS_FRAMES` (default 600) and `DEEPTRACE_MAX_AUDIO_WINDOWS` (default 300). The pipeline widens the sample interval when a recording exceeds either budget and includes the effective interval and a coverage note in the result. Video decoding and scene detection still process the source media, so these caps bound model work rather than total runtime.
+
+Each worker process reuses loaded Xception and AASIST-L models across its jobs to avoid repeated checkpoint initialization. Results and reports record model checkpoint hashes. Restart a worker after changing checkpoint files so the process reloads the new weights.
 
 ## Hosting readiness
 

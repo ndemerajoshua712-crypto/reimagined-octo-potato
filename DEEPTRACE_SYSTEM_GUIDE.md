@@ -4,9 +4,9 @@ This guide describes the current DeepTrace application: its architecture, what e
 
 ## 1. What DeepTrace is
 
-DeepTrace is a local video and audio analysis prototype. A user uploads a video in the React app. FastAPI records a case and a queued job in PostgreSQL. A separate Python worker analyzes the media, stores generated files on disk, and writes the structured result back to PostgreSQL. The React app then displays the case, evidence, and report.
+DeepTrace is a local video and audio evidence-analysis system. A user uploads a video in the React app. FastAPI records a case and a queued job in PostgreSQL. A separate Python worker analyzes the media, stores generated files on disk, and writes the structured result back to PostgreSQL. The React app then displays the case, evidence, and report.
 
-The result is investigative evidence, not a definitive authenticity judgment. The displayed combined evidence score remains a prototype score unless a valid locally fitted calibration artifact is installed. No labeled calibration dataset or artifact is currently present in this repository.
+The result is investigative evidence, not a definitive authenticity judgment. The combined evidence score is raw and uncalibrated unless a valid locally fitted calibration artifact is installed. No labeled calibration dataset or artifact is currently present in this repository.
 
 ## 2. Architecture at a glance
 
@@ -39,7 +39,7 @@ The Vite proxy is configured for local development and the current frontend tunn
 | Frontend | `frontend/src/App.tsx`, `frontend/src/api.ts`, `frontend/src/types.ts`, `frontend/src/styles.css` | Uploads a video, shows case history and job state, requests results, renders evidence, and links to reports/artifacts. Typed API calls live in `api.ts`; result and job shapes live in `types.ts`. |
 | API | `backend/main.py`, `backend/schemas.py` | Validates requests, streams uploads to disk, creates case/job records, returns case/job/result data, serves Server-Sent Events (SSE), and serves reports/artifacts. Schemas define response shapes. |
 | Persistence | `backend/repository.py`, `backend/config.py` | Uses Psycopg to create/read/update PostgreSQL `cases` and `jobs`; resolves configuration and local storage paths. Results are stored as JSONB. |
-| Worker | `backend/worker.py` | Polls PostgreSQL, atomically claims queued jobs, calls the analysis pipeline, writes progress/result/failure state, and logs failures. Numba's cache is placed under the writable data directory. |
+| Worker | `backend/worker.py` | Polls PostgreSQL, atomically claims queued jobs, calls the analysis pipeline, writes progress/result/failure state, and logs failures. Model instances are reused between jobs in each worker process. Numba's cache is placed under the writable data directory. |
 | Analysis orchestration | `analysis_pipeline.py` | Coordinates media metadata, scene/frame extraction, face analysis, temporal scoring, audio analysis, synchronization checks, multimodal scoring, and report generation. It is kept independent of React and FastAPI. |
 | Video analysis | `video_engine/` | Extracts video frames, detects/extracts faces, applies the Xception face classifier, and summarizes variation across frame predictions. PySceneDetect finds scene boundaries. |
 | Audio analysis | `audio_engine/`, `audio_model/` | Extracts audio, divides it into windows, applies the AASIST-L audio model, scores windows, and compares audio/video duration. Lip-sync analysis is attempted separately. |
@@ -59,8 +59,8 @@ Possible job statuses are `queued`, `running`, `succeeded`, and `failed`. The wo
 2. The API checks the file extension and size, streams it to the upload directory, and computes a SHA-256 hash as it writes. The default upload limit is 2 GiB; `DEEPTRACE_MAX_UPLOAD_BYTES` can override it.
 3. The API inserts the case and a `queued` job in PostgreSQL and returns their IDs with HTTP `202`.
 4. The worker polls for queued jobs. It claims one, changes it to `running`, and calls `analyze_video_file(...)` with the case-specific input and output directory.
-5. The pipeline probes metadata and hash, detects scenes, extracts sampled frames, detects faces, runs the Xception classifier on face crops, summarizes frame-level scores, extracts audio, runs AASIST-L on audio windows, evaluates audio/video duration alignment, and generates the structured result and text report.
-6. Before report generation, the pipeline checks for `cases/score_calibration.json`. When present, it applies the saved isotonic mapping to the combined raw score and includes its held-out metrics in the result/report. Without that artifact, the calibrated score is absent and the UI shows only the prototype score.
+5. The pipeline probes metadata and hash, records SHA-256 identifiers for available model checkpoints, detects scenes, extracts sampled frames, detects faces, runs the Xception classifier on face crops, summarizes frame-level scores, extracts audio when present, runs AASIST-L on audio windows, evaluates audio/video duration alignment when both tracks exist, and generates the structured result and text report. Default compute limits cap inference at 600 sampled video frames and 300 audio windows; `.env` can adjust them.
+6. Before report generation, the pipeline checks for `cases/score_calibration.json`. When present, it applies the saved isotonic mapping to the combined raw score and includes its held-out metrics in the result/report. Without that artifact, the calibrated score is absent and the UI shows only the raw score.
 7. The worker stores the result in the case's JSONB field and marks the job `succeeded`. On an exception, it logs a traceback and marks the job `failed` with a safe API-facing message.
 8. The frontend receives status events over SSE. If SSE is interrupted, it polls the job endpoint. On success, it loads the result, thumbnails, and report link.
 
@@ -71,7 +71,8 @@ The pipeline currently reports broad stage updates, not progress for every frame
 | Stage | Approximate reported progress | Work being done |
 | --- | ---: | --- |
 | `provenance` | 8% | Hash and media metadata. |
-| `scene_detection` | 15% | Find scene boundaries and extract frames. |
+| `scene_detection` | 12% | Find scene boundaries. |
+| `frame_extraction` | 18% | Save the sampled frames used for visual inference. |
 | `face_analysis` | 25% | Detect faces and run the visual classifier on face crops. This can take the longest on CPU or with dense sampling. |
 | `temporal_analysis` | 52% | Summarize variation across frame predictions. |
 | `audio_analysis` | 62% | Extract and score audio windows. |
@@ -80,6 +81,10 @@ The pipeline currently reports broad stage updates, not progress for every frame
 | `complete` | 100% | Persist the result and finish the job. |
 
 These values mark stage starts/completions rather than a smooth estimate of time remaining. Jobs left `running` for more than six hours are requeued when a worker starts; the current worker does not heartbeat or automatically retry recent failed jobs.
+
+For long videos, the analysis pipeline increases the effective frame interval when needed to stay within the configured frame budget. Audio inference likewise increases its window step to stay within its window budget, retaining samples across the full recording. The result and report state when either limit reduced sampling. Scene detection and media decoding still read the source video, so long or high-resolution files can continue to take time even with bounded model inference.
+
+Each worker process keeps loaded Xception and AASIST-L models in memory for subsequent jobs. The report records checkpoint SHA-256 hashes so a reviewer can identify the exact model files used. Restart the worker after replacing checkpoints to ensure it loads the new weights.
 
 ## 5. How the analysis scores work today
 
@@ -107,9 +112,9 @@ The current multimodal score is:
 
 The verdict thresholds are `>= 0.75` high, `>= 0.55` moderate, `>= 0.40` low, and below `0.40` very low AI/deepfake evidence. The source code explicitly treats temporal consistency and A/V synchronization as supporting indicators rather than adding them to this primary weighted score.
 
-The displayed temporal consistency is `1 - standard_deviation` of frame fake scores, clamped at zero. This indicates how similar the sampled predictions are; it does not independently establish whether the clip is fake. Track alignment is based primarily on the difference between audio and video duration. A compatible SyncNet model/checkpoint is not configured, so detailed lip-sync evidence can be unavailable. The animation/CGI heuristic is a prototype side finding and is not part of the combined score.
+The displayed temporal consistency is `1 - standard_deviation` of frame fake scores, clamped at zero. This indicates how similar the sampled predictions are; it does not independently establish whether the clip is fake. Track alignment is based primarily on the difference between audio and video duration. A compatible SyncNet model/checkpoint is not configured, so detailed lip-sync evidence can be unavailable. The rule-based animation/CGI appearance heuristic is a side finding and is not part of the combined score.
 
-These scores combine model outputs and hand-selected weights/thresholds. They are **not calibrated probabilities**. For example, `75%` means a current prototype score of 0.75, not that there is a validated 75% chance of manipulation.
+These scores combine model outputs and hand-selected weights/thresholds. When both modalities are available, video and audio contribute equally. If one modality is unavailable, the remaining model signal is used alone and the interface labels the result as single-modality; if neither is usable, no combined score is shown. The values are **not calibrated probabilities**. For example, `75%` means a current evidence score of 0.75, not that there is a validated 75% chance of manipulation.
 
 ## 6. How to run and monitor the services
 
@@ -187,7 +192,7 @@ Yes. The best first feature is a **calibrated confidence and reliability panel**
 ### Why this is the right first improvement
 
 1. The current Xception and AASIST outputs are model scores. Their softmax values are not known to match real-world success rates.
-2. The final score combines video and audio with fixed 50/50 weights, even when one modality may have weak or missing evidence.
+2. When both modalities are available, the final score combines video and audio with fixed 50/50 weights, even when one modality may have weak evidence. Missing modalities are now omitted rather than treated as a zero score.
 3. A single threshold turns the combined score into a verdict without measuring calibration, false-positive cost, or performance on unseen generators/codecs.
 4. Published work shows that modern neural networks can be miscalibrated and that post-hoc temperature scaling can improve calibration on a held-out validation set. Calibration alone does not fix model errors or dataset/domain shift. Deepfake detection benchmarks also emphasize standardized evaluation across datasets and manipulation types. [Guo et al., *On Calibration of Modern Neural Networks*](https://arxiv.org/abs/1706.04599), [DeepfakeBench, NeurIPS 2023](https://papers.nips.cc/paper_files/paper/2023/hash/0e735e4b4f07de483cbe250130992726-Abstract-Datasets_and_Benchmarks.html), [DF40, NeurIPS 2024](https://papers.nips.cc/paper_files/paper/2024/hash/34239f60eca7ce9bee5280aaf81362d8-Abstract-Datasets_and_Benchmarks_Track.html).
 
@@ -202,7 +207,7 @@ Yes. The best first feature is a **calibrated confidence and reliability panel**
 
 ### What the user should see
 
-- Current prototype evidence score, explicitly labeled as a score until calibration is validated.
+- Current raw evidence score, explicitly labeled as uncalibrated until evaluation supports probability wording.
 - A calibrated estimate only when a local calibration artifact is installed; avoid calling it a likelihood until the calibration and performance claims are supported by representative, independent evaluations.
 - Video and audio scores separately, with a “not available” state when a modality could not be analyzed.
 - Evidence coverage: sampled frame count, detected face count, audio duration/window count, quality warnings, and modality disagreement.
@@ -228,6 +233,15 @@ Create a CSV with these required columns:
 
 Use predictions generated by this pipeline on labeled examples. Keep near-duplicate source videos and derived manipulations in a single split to prevent leakage. Do not fit on production user cases or use test labels to tune the model. Subgroups with fewer than 10 held-out examples are omitted; subgroup AUROC is omitted if that subgroup has only one label.
 
+To create the predictions CSV directly from labeled videos, prepare a manifest with columns `video_path,label,split` and optional `dataset,manipulation_type`. Relative paths are resolved from the manifest folder. Labels are `0` for real and `1` for manipulated. The evaluator hashes each input, refuses duplicate media in multiple splits, writes errors to `analysis_error`, and leaves the combined `score` empty when either audio or video is unavailable. For example:
+
+```powershell
+python -m backend.evaluate_dataset path\to\labeled_manifest.csv --output cases\labeled_predictions.csv
+python -m backend.calibrate cases\labeled_predictions.csv
+```
+
+Review the output CSV before fitting: exclude failed rows, verify the split and subgroup labels, and confirm the paired modality coverage matches the intended deployment. The evaluator does not add cases to the app database and does not ship with a labeled dataset.
+
 Run from the repository root with the same Python environment used for analysis:
 
 ```powershell
@@ -236,7 +250,7 @@ python -m backend.calibrate path\to\labeled_scores.csv
 
 The command prints held-out Brier score, expected calibration error, and ROC AUC, and writes `cases/score_calibration.json`. The artifact records the source CSV SHA-256, row counts, overall held-out metrics, and available dataset/manipulation breakdowns. The path can be changed with `--output`, but runtime analysis loads only the default `cases/score_calibration.json` location. Re-run calibration when model checkpoints, score fusion, or evaluation population changes. Existing completed cases are not recalculated; only new analyses use the artifact.
 
-The React result view and downloadable text report show a calibrated estimate only when the default artifact exists. They also show the held-out row count and a similarity caveat. The UI still labels the underlying blend as a prototype evidence score. No calibrated score is currently active because no real labeled calibration CSV or artifact was found in the repository. The API does not offer a calibration upload endpoint; fitting is a local operator command, which avoids exposing a global calibration-file write route on the unauthenticated development app.
+The React result view and downloadable text report show a calibrated estimate only when the default artifact exists and both video and audio model signals are available. They also show the held-out row count and a similarity caveat. The UI labels the underlying blend as a raw evidence score. No calibrated score is currently active because no real labeled calibration CSV or artifact was found in the repository. The API does not offer a calibration upload endpoint; fitting is a local operator command, which avoids exposing a global calibration-file write route on the unauthenticated development app.
 
 These metrics describe the supplied sample, not a guarantee of real-world error rates. A single global calibrator can conceal poor performance on a particular dataset or manipulation type, which is why subgroup results and continued held-out evaluation matter.
 

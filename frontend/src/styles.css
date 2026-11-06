@@ -118,6 +118,10 @@ h1 { font: 600 clamp(30px, 4vw, 45px)/1.08 var(--display); letter-spacing: -.045
 .interval-control > span { font-size: 9px; }
 .format-note { font-size: 10px; }
 .sampling-help { margin: 10px 1px 0; color: #9aa8b4; font-size: 11px; line-height: 1.5; }
+.analysis-notes { display: flex; flex-direction: column; gap: 5px; margin-top: 12px; padding: 11px 13px; border: 1px solid rgba(231,180,112,.2); border-radius: 6px; background: rgba(231,180,112,.045); color: #d1b78d; font-size: 11px; line-height: 1.5; }
+.analysis-notes strong { color: #efd5a9; font: 600 9px var(--mono); letter-spacing: .08em; text-transform: uppercase; }
+.signal-row.unavailable .signal-track { opacity: .35; background: repeating-linear-gradient(135deg, rgba(255,255,255,.06) 0 3px, transparent 3px 6px); }
+.signal-row.unavailable b { color: #7f8b96; }
 .analyze-button { min-height: 37px; padding: 0 13px; font-size: 11px; }
 .error-banner { font-size: 12px; line-height: 1.5; }
 .processing-card { align-items: flex-start; padding: 20px; }

@@ -48,6 +48,15 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/v1/config")
+def public_config():
+    """Safe upload settings used by the frontend for early file validation."""
+    return {
+        "max_upload_bytes": MAX_UPLOAD_BYTES,
+        "allowed_extensions": sorted(ALLOWED_EXTENSIONS),
+    }
+
+
 @app.get("/ready")
 def readiness():
     try:

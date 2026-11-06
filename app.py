@@ -853,7 +853,7 @@ with st.expander("Evaluate calibration on labeled predictions"):
 
 def animation_heuristic(frame_paths, face_results):
     """
-    Prototype animation/CGI heuristic.
+    Rule-based animation/CGI appearance heuristic.
 
     This does NOT prove that animation was AI-generated.
     It looks for:
@@ -940,8 +940,8 @@ def animation_heuristic(frame_paths, face_results):
             "reason": (
                 "No human faces were detected and the sampled "
                 "frames show strong synthetic/illustrated visual "
-                "characteristics. This is a prototype animation/CGI "
-                "heuristic, not proof of AI generation."
+                "characteristics. This appearance heuristic is not "
+                "proof of AI generation."
             )
         }
 
@@ -1531,7 +1531,7 @@ if st.session_state.get(
             primary_score,
             verdict,
             "PRIMARY EVIDENCE SCORE",
-            "Prototype evidence score, not a calibrated probability.",
+            "Raw evidence score; not a calibrated probability.",
         )
         if calibrated_primary_score is not None:
             st.caption(
@@ -1597,7 +1597,7 @@ if st.session_state.get(
                 </div>
 
                 <div class="animation-text">
-                    Prototype visual classification confidence:
+                    Rule-based appearance score:
                     <strong>
                         {animation_result["confidence"] * 100:.2f}%
                     </strong>

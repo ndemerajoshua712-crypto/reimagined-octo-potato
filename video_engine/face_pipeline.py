@@ -1,4 +1,5 @@
 import os
+from functools import lru_cache
 from pathlib import Path
 
 from video_engine.face_detector import (
@@ -19,6 +20,15 @@ DEFAULT_MODEL_PATH = (
 )
 
 
+@lru_cache(maxsize=4)
+def _load_detector(model_path):
+    detector = DeepfakeDetector(model_path)
+    print("Loading deepfake detection model...")
+    detector.load_model()
+    print("Deepfake model loaded.")
+    return detector
+
+
 def analyze_frames(
     frame_list,
     face_folder="faces",
@@ -27,12 +37,8 @@ def analyze_frames(
 
     os.makedirs(face_folder, exist_ok=True)
 
-    # Create detector
-    detector = DeepfakeDetector(model_path)
-
-    print("Loading deepfake detection model...")
-    detector.load_model()
-    print("Deepfake model loaded.")
+    # Reuse model weights across jobs handled by this worker process.
+    detector = _load_detector(str(Path(model_path).resolve()))
 
     results = []
 

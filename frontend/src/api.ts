@@ -25,6 +25,10 @@ export async function fetchCases(): Promise<CaseSummary[]> {
   return response.items;
 }
 
+export function fetchPublicConfig(): Promise<{ max_upload_bytes: number; allowed_extensions: string[] }> {
+  return request<{ max_upload_bytes: number; allowed_extensions: string[] }>("/api/v1/config");
+}
+
 export function fetchJob(jobId: string): Promise<JobUpdate> {
   return request<JobUpdate>(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
 }
