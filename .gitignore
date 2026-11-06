@@ -1,0 +1,41 @@
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Generated analysis data
+audio/
+faces/
+frames/
+cases/*
+!cases/.gitkeep
+
+# Temporary uploads and test media
+uploads/
+*.mp4
+*.wav
+*.mp3
+*.avi
+*.mov
+
+# Model weights and archives
+*.pth
+*.pt
+*.ckpt
+*.zip
+
+# Secrets and environment variables
+.env
+.env.*
+!.env.example
+
+# IDE and operating system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
