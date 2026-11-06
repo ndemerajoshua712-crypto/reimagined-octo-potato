@@ -7,7 +7,9 @@ def generate_forensic_report(
     video_result,
     audio_result,
     temporal_result,
-    sync_result
+    sync_result,
+    calibrated_score=None,
+    calibration_info=None,
 ):
 
     report = []
@@ -34,6 +36,36 @@ def generate_forensic_report(
         f"Evidence Score: "
         f"{multimodal_result['primary_score']*100:.2f}%"
     )
+
+    if calibrated_score is not None:
+        report.append(f"Calibrated Estimate: {calibrated_score*100:.2f}%")
+        if calibration_info:
+            report.append(
+                "Calibration: "
+                f"{calibration_info.get('method', 'isotonic_regression')}; "
+                f"trained on {calibration_info.get('train_rows', 'unknown')} rows; "
+                f"evaluated on {calibration_info.get('test_rows', 'unknown')} held-out rows."
+            )
+        report.append(
+            "NOTE: This calibrated estimate is valid only for data similar to the "
+            "calibration set. It does not establish authenticity or manipulation."
+        )
+        subgroup_metrics = (calibration_info or {}).get("subgroup_metrics", {})
+        rendered_groups = 0
+        for dimension, groups in subgroup_metrics.items():
+            for group, metrics in groups.items():
+                auc = metrics.get("calibrated_auc")
+                suffix = f"; AUC {auc:.3f}" if auc is not None else ""
+                report.append(
+                    f"Held-out {dimension}={group}: {metrics['rows']} rows; "
+                    f"Brier {metrics['calibrated_brier']:.3f}; "
+                    f"ECE {metrics['calibrated_ece']:.3f}{suffix}."
+                )
+                rendered_groups += 1
+        if rendered_groups:
+            report.append(
+                "Subgroup results are descriptive; small groups may be uncertain."
+            )
 
     report.append(
         "\nNOTE: The evidence score is a prototype "

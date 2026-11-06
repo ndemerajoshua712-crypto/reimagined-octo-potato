@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - deeptrace_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-deeptrace} -d ${POSTGRES_DB:-deeptrace}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  deeptrace_postgres_data:

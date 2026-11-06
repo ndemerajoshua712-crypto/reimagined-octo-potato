@@ -7,7 +7,31 @@ from pathlib import Path
 
 
 REQUIRED_COLUMNS = {"score", "label", "split"}
+GROUP_COLUMNS = ("dataset", "manipulation_type")
 CALIBRATION_PATH = Path(__file__).resolve().parent / "cases" / "score_calibration.json"
+
+
+def _expected_calibration_error(labels, scores, bins=10):
+    edges = np.linspace(0.0, 1.0, bins + 1)
+    error = 0.0
+    for lower, upper in zip(edges[:-1], edges[1:]):
+        mask = (scores >= lower) & (scores <= upper if upper == 1.0 else scores < upper)
+        if mask.any():
+            error += mask.mean() * abs(labels[mask].mean() - scores[mask].mean())
+    return float(error)
+
+
+def _metrics(labels, raw_scores, calibrated_scores):
+    metrics = {
+        "rows": int(len(labels)),
+        "raw_brier": float(brier_score_loss(labels, raw_scores)),
+        "calibrated_brier": float(brier_score_loss(labels, calibrated_scores)),
+        "calibrated_ece": _expected_calibration_error(labels, calibrated_scores),
+    }
+    if np.unique(labels).size == 2:
+        metrics["raw_auc"] = float(roc_auc_score(labels, raw_scores))
+        metrics["calibrated_auc"] = float(roc_auc_score(labels, calibrated_scores))
+    return metrics
 
 
 def evaluate_calibration_csv(source):
@@ -19,10 +43,12 @@ def evaluate_calibration_csv(source):
             f"missing: {', '.join(sorted(missing))}."
         )
 
-    data = data.loc[:, ["score", "label", "split"]].dropna().copy()
+    kept_columns = ["score", "label", "split", *[c for c in GROUP_COLUMNS if c in data.columns]]
+    data = data.loc[:, kept_columns].dropna(subset=["score", "label", "split"]).copy()
     data["score"] = pd.to_numeric(data["score"], errors="coerce")
     data["label"] = pd.to_numeric(data["label"], errors="coerce")
-    data = data.dropna()
+    # Optional subgroup labels may be blank; retain those rows for overall metrics.
+    data = data.dropna(subset=["score", "label"])
     data["split"] = data["split"].astype(str).str.strip().str.lower()
 
     if not data["label"].isin([0, 1]).all():
@@ -42,24 +68,28 @@ def evaluate_calibration_csv(source):
     raw_scores = testing["score"].to_numpy(dtype=float)
     labels = testing["label"].to_numpy(dtype=int)
     calibrated = calibrator.predict(raw_scores)
-    bins = np.linspace(0.0, 1.0, 11)
-    ece = 0.0
-    for lower, upper in zip(bins[:-1], bins[1:]):
-        mask = (calibrated >= lower) & (
-            calibrated <= upper if upper == 1.0 else calibrated < upper
-        )
-        if mask.any():
-            ece += mask.mean() * abs(labels[mask].mean() - calibrated[mask].mean())
-
+    metrics = _metrics(labels, raw_scores, calibrated)
+    subgroup_metrics = {}
+    for column in GROUP_COLUMNS:
+        if column not in testing:
+            continue
+        values = testing[column].fillna("unspecified").astype(str).str.strip()
+        values = values.replace("", "unspecified")
+        grouped = {}
+        for value in sorted(values.unique()):
+            mask = values.to_numpy() == value
+            group_labels = labels[mask]
+            if len(group_labels) < 10:
+                continue
+            grouped[value] = _metrics(group_labels, raw_scores[mask], calibrated[mask])
+        subgroup_metrics[column] = grouped
     result = {
         "train_rows": int(len(training)),
         "test_rows": int(len(testing)),
         "raw_accuracy": float(accuracy_score(labels, raw_scores >= 0.5)),
         "calibrated_accuracy": float(accuracy_score(labels, calibrated >= 0.5)),
-        "raw_brier": float(brier_score_loss(labels, raw_scores)),
-        "calibrated_brier": float(brier_score_loss(labels, calibrated)),
-        "calibrated_ece": float(ece),
-        "calibrated_auc": float(roc_auc_score(labels, calibrated)),
+        **metrics,
+        "subgroup_metrics": subgroup_metrics,
         "heldout_calibrated_scores": calibrated,
         "heldout_labels": labels,
         "calibrator": calibrator,
@@ -67,10 +97,12 @@ def evaluate_calibration_csv(source):
     return result
 
 
-def save_calibration(result, path=CALIBRATION_PATH):
+def save_calibration(result, path=CALIBRATION_PATH, source_sha256=None):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     artifact = {
+        "method": "isotonic_regression",
+        "source_sha256": source_sha256,
         "x_thresholds": result["calibrator"].X_thresholds_.tolist(),
         "y_thresholds": result["calibrator"].y_thresholds_.tolist(),
         "train_rows": result["train_rows"],
@@ -81,6 +113,7 @@ def save_calibration(result, path=CALIBRATION_PATH):
         "calibrated_brier": result["calibrated_brier"],
         "calibrated_ece": result["calibrated_ece"],
         "calibrated_auc": result["calibrated_auc"],
+        "subgroup_metrics": result["subgroup_metrics"],
     }
     path.write_text(json.dumps(artifact, indent=2), encoding="utf-8")
     return artifact

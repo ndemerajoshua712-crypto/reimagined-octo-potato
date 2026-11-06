@@ -16,6 +16,7 @@ cases/*
 !cases/.gitkeep
 
 # Temporary uploads and test media
+
 uploads/
 *.mp4
 *.wav
@@ -39,3 +40,16 @@ uploads/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local backend data
+backend_data/
+frontend/node_modules/
+frontend/dist/
+*.tsbuildinfo
+tmp/
+
+# Keep the finished user guide; ignore other generated output.
+output/*
+!output/pdf/
+output/pdf/*
+!output/pdf/DeepTrace_System_Guide.pdf
